@@ -32,7 +32,7 @@ if ! command -v jq &>/dev/null; then
 fi
 
 # Parse event fields
-EVENT_TYPE="$(echo "$INPUT" | jq -r '.type // empty')"
+EVENT_TYPE="$(echo "$INPUT" | jq -r '.hook_event_name // empty')"
 NOTIFICATION_TYPE="$(echo "$INPUT" | jq -r '.notification_type // empty')"
 SESSION_ID="$(echo "$INPUT" | jq -r '.session_id // empty')"
 MESSAGE="$(echo "$INPUT" | jq -r '.message // "Claude Code needs your attention"')"

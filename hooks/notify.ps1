@@ -27,7 +27,7 @@ try {
 }
 
 # Parse event fields
-$eventType = $inputObj.type
+$eventType = $inputObj.hook_event_name
 $notificationType = $inputObj.notification_type
 $message = if ($inputObj.message) { $inputObj.message } else { "Claude Code needs your attention" }
 $title = if ($inputObj.title) { $inputObj.title } else { "Claude Code" }
