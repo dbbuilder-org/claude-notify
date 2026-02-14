@@ -7,7 +7,7 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-import { registerSession, getSession, removeSession, registerAction, getAction, consumeAction } from "./store.mjs";
+import { registerSession, getSession, removeSession, registerAction, getAction, consumeAction, setDecision, getDecision } from "./store.mjs";
 import { sendToIterm } from "./iterm.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -102,22 +102,39 @@ async function handleRequest(req, res) {
       notificationType: body.notification_type,
       message: body.message,
       project: body.project,
+      tool: body.tool,
     });
     json(res, 200, { ok: true });
     return;
   }
 
-  // GET /approve/:uuid — send "y" to Claude
+  // GET /approve/:uuid — approve the action
   if (method === "GET" && path.startsWith("/approve/")) {
     const uuid = path.slice("/approve/".length);
+    // Set decision for PermissionRequest hook polling
+    setDecision(uuid, "allow");
+    // Also try iTerm2 keystroke as fallback (for Notification-based flow)
     await handleAction(res, uuid, "y");
     return;
   }
 
-  // GET /deny/:uuid — send "n" to Claude
+  // GET /deny/:uuid — deny the action
   if (method === "GET" && path.startsWith("/deny/")) {
     const uuid = path.slice("/deny/".length);
+    setDecision(uuid, "deny");
     await handleAction(res, uuid, "n");
+    return;
+  }
+
+  // GET /decision/:uuid — poll for decision (used by permission-gate.sh)
+  if (method === "GET" && path.startsWith("/decision/")) {
+    const uuid = path.slice("/decision/".length);
+    const decision = getDecision(uuid);
+    if (decision) {
+      json(res, 200, { ok: true, decision });
+    } else {
+      json(res, 200, { ok: true, decision: null });
+    }
     return;
   }
 
@@ -170,26 +187,35 @@ async function handleRequest(req, res) {
 }
 
 async function handleAction(res, uuid, text) {
-  const action = consumeAction(uuid);
+  const action = getAction(uuid);
   if (!action) {
+    // Check if there's already a decision set (approve/deny was called)
+    const decision = getDecision(uuid);
+    if (decision) {
+      json(res, 200, { ok: true, decision, note: "Decision recorded (hook will pick it up)" });
+      return;
+    }
     json(res, 410, { ok: false, error: "Token expired or already used" });
     return;
   }
 
+  // Mark as consumed
+  consumeAction(uuid);
+
+  // Try iTerm2 keystroke as a best-effort fallback
   const session = getSession(action.sessionId);
-  if (!session || !session.itermSession) {
-    json(res, 500, { ok: false, error: "No iTerm2 session found for this Claude session" });
-    return;
+  let itermSent = false;
+  if (session && session.itermSession) {
+    try {
+      await sendToIterm(session.itermSession, text);
+      itermSent = true;
+    } catch (err) {
+      // iTerm2 failed — that's OK if PermissionRequest hook is polling
+      console.log(`[claude-notify-server] iTerm2 fallback failed: ${err.message}`);
+    }
   }
 
-  try {
-    await sendToIterm(session.itermSession, text);
-    json(res, 200, { ok: true, sent: text });
-  } catch (err) {
-    // Un-consume on failure so user can retry
-    const a = getAction(uuid); // already consumed, need to reset
-    json(res, 500, { ok: false, error: err.message });
-  }
+  json(res, 200, { ok: true, sent: text, itermSent });
 }
 
 function basename(p) {

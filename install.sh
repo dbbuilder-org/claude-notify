@@ -58,7 +58,7 @@ echo ""
 echo "Config written to: $CONFIG_FILE"
 
 # --- Make hook scripts executable ---
-chmod +x "${HOOK_DIR}/notify.sh" "${HOOK_DIR}/register-session.sh" "${HOOK_DIR}/unregister-session.sh"
+chmod +x "${HOOK_DIR}/notify.sh" "${HOOK_DIR}/register-session.sh" "${HOOK_DIR}/unregister-session.sh" "${HOOK_DIR}/permission-gate.sh"
 
 # --- Configure Claude Code hooks in settings.json ---
 echo ""
@@ -84,6 +84,13 @@ HOOK_ENTRY=$(jq -n --arg cmd "bash ${NOTIFY_SCRIPT}" '{
     "timeout": 10
 }')
 
+# Build permission gate hook (longer timeout — waits for remote decision)
+GATE_HOOK=$(jq -n --arg cmd "bash ${HOOK_DIR}/permission-gate.sh" '{
+    "type": "command",
+    "command": $cmd,
+    "timeout": 90
+}')
+
 # Build session hooks
 REG_HOOK=$(jq -n --arg cmd "bash ${HOOK_DIR}/register-session.sh" '{
     "type": "command",
@@ -101,6 +108,7 @@ UNREG_HOOK=$(jq -n --arg cmd "bash ${HOOK_DIR}/unregister-session.sh" '{
 # hooks is an object keyed by event name, each value is an array of {matcher?, hooks: [...]}
 SETTINGS=$(echo "$SETTINGS" | jq \
     --argjson hook "$HOOK_ENTRY" \
+    --argjson gate "$GATE_HOOK" \
     --argjson reg "$REG_HOOK" \
     --argjson unreg "$UNREG_HOOK" '
     # Remove any existing claude-notify entries first
@@ -117,6 +125,14 @@ SETTINGS=$(echo "$SETTINGS" | jq \
     ]) |
     .hooks.Stop = ((.hooks.Stop // []) + [
         { "hooks": [$hook] }
+    ]) |
+    .hooks.PermissionRequest = ((.hooks.PermissionRequest // []) + [
+        { "matcher": "Bash", "hooks": [$gate] },
+        { "matcher": "Write", "hooks": [$gate] },
+        { "matcher": "Edit", "hooks": [$gate] },
+        { "matcher": "WebFetch", "hooks": [$gate] },
+        { "matcher": "Task", "hooks": [$gate] },
+        { "matcher": "mcp__.*", "hooks": [$gate] }
     ]) |
     .hooks.SessionStart = ((.hooks.SessionStart // []) + [
         { "matcher": "startup", "hooks": [$reg] },

@@ -25,14 +25,16 @@ export function removeSession(sessionId) {
 
 // --- Actions ---
 
-export function registerAction({ uuid, sessionId, notificationType, message, project }) {
+export function registerAction({ uuid, sessionId, notificationType, message, project, tool }) {
   actions.set(uuid, {
     sessionId,
     notificationType,
     message,
     project: project || "",
+    tool: tool || "",
     createdAt: Date.now(),
     used: false,
+    decision: null,  // "allow" or "deny" — set by approve/deny endpoints
   });
 }
 
@@ -52,6 +54,22 @@ export function consumeAction(uuid) {
   if (!action) return null;
   action.used = true;
   return action;
+}
+
+export function setDecision(uuid, decision) {
+  const action = actions.get(uuid);
+  if (!action) return false;
+  if (Date.now() - action.createdAt > ACTION_TTL_MS) return false;
+  action.decision = decision; // "allow" or "deny"
+  action.used = true;
+  return true;
+}
+
+export function getDecision(uuid) {
+  const action = actions.get(uuid);
+  if (!action) return null;
+  if (Date.now() - action.createdAt > ACTION_TTL_MS) return null;
+  return action.decision;
 }
 
 // --- Cleanup ---
