@@ -34,6 +34,7 @@ fi
 # Parse event fields
 EVENT_TYPE="$(echo "$INPUT" | jq -r '.type // empty')"
 NOTIFICATION_TYPE="$(echo "$INPUT" | jq -r '.notification_type // empty')"
+SESSION_ID="$(echo "$INPUT" | jq -r '.session_id // empty')"
 MESSAGE="$(echo "$INPUT" | jq -r '.message // "Claude Code needs your attention"')"
 TITLE="$(echo "$INPUT" | jq -r '.title // "Claude Code"')"
 
@@ -96,14 +97,50 @@ if [[ ${#MESSAGE} -gt 200 ]]; then
     MESSAGE="${MESSAGE:0:197}..."
 fi
 
+# --- Remote control integration ---
+# If claude-notify-server is running, register a one-time action token
+# and include click URL + action buttons in the notification
+CTRL_PORT="${CLAUDE_NOTIFY_PORT:-9876}"
+CTRL_LOCAL="http://127.0.0.1:${CTRL_PORT}"
+CTRL_REMOTE="${CLAUDE_NOTIFY_REMOTE_URL:-}"
+CLICK_HEADER=""
+ACTIONS_HEADER=""
+
+if curl -s -m 1 "${CTRL_LOCAL}/health" >/dev/null 2>&1; then
+    ACTION_UUID="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+    NOTIFY_TYPE="${NOTIFICATION_TYPE:-stop}"
+
+    # Register action token with server
+    curl -s -m 2 -X POST "${CTRL_LOCAL}/register-action" \
+        -H "Content-Type: application/json" \
+        -d "$(jq -n \
+            --arg uuid "$ACTION_UUID" \
+            --arg sid "$SESSION_ID" \
+            --arg ntype "$NOTIFY_TYPE" \
+            --arg msg "$MESSAGE" \
+            --arg proj "$PROJECT_NAME" \
+            '{ uuid: $uuid, session_id: $sid, notification_type: $ntype, message: $msg, project: $proj }'
+        )" >/dev/null 2>&1 || true
+
+    # Build URLs — use remote URL if configured, otherwise local
+    BASE_URL="${CTRL_REMOTE:-${CTRL_LOCAL}}"
+    CLICK_HEADER="${BASE_URL}/control/${ACTION_UUID}"
+    ACTIONS_HEADER="view, Approve, ${BASE_URL}/approve/${ACTION_UUID}, clear=true; view, Deny, ${BASE_URL}/deny/${ACTION_UUID}, clear=true; view, Open, ${BASE_URL}/control/${ACTION_UUID}"
+fi
+
 # Send to ntfy.sh (5-second timeout, non-blocking)
 if [[ -n "${CLAUDE_NOTIFY_TOPIC:-}" ]]; then
-    curl -s -m 5 \
-        -H "Title: ${TITLE}" \
-        -H "Priority: ${PRIORITY}" \
-        -H "Tags: ${TAGS}" \
-        -d "${MESSAGE}" \
-        "${CLAUDE_NOTIFY_SERVER}/${CLAUDE_NOTIFY_TOPIC}" >/dev/null 2>&1 &
+    CURL_ARGS=(
+        -s -m 5
+        -H "Title: ${TITLE}"
+        -H "Priority: ${PRIORITY}"
+        -H "Tags: ${TAGS}"
+    )
+    [[ -n "$CLICK_HEADER" ]] && CURL_ARGS+=(-H "Click: ${CLICK_HEADER}")
+    [[ -n "$ACTIONS_HEADER" ]] && CURL_ARGS+=(-H "Actions: ${ACTIONS_HEADER}")
+    CURL_ARGS+=(-d "${MESSAGE}" "${CLAUDE_NOTIFY_SERVER}/${CLAUDE_NOTIFY_TOPIC}")
+
+    curl "${CURL_ARGS[@]}" >/dev/null 2>&1 &
 fi
 
 # Local notification via terminal-notifier (if available and enabled)

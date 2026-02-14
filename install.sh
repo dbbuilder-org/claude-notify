@@ -58,7 +58,7 @@ echo ""
 echo "Config written to: $CONFIG_FILE"
 
 # --- Make hook scripts executable ---
-chmod +x "${HOOK_DIR}/notify.sh"
+chmod +x "${HOOK_DIR}/notify.sh" "${HOOK_DIR}/register-session.sh" "${HOOK_DIR}/unregister-session.sh"
 
 # --- Configure Claude Code hooks in settings.json ---
 echo ""
@@ -84,17 +84,30 @@ HOOK_ENTRY=$(jq -n --arg cmd "bash ${NOTIFY_SCRIPT}" '{
     "timeout": 10
 }')
 
+# Build session hooks
+REG_HOOK=$(jq -n --arg cmd "bash ${HOOK_DIR}/register-session.sh" '{
+    "type": "command",
+    "command": $cmd,
+    "timeout": 5
+}')
+
+UNREG_HOOK=$(jq -n --arg cmd "bash ${HOOK_DIR}/unregister-session.sh" '{
+    "type": "command",
+    "command": $cmd,
+    "timeout": 5
+}')
+
 # Merge hooks into settings using the correct Claude Code hooks schema:
 # hooks is an object keyed by event name, each value is an array of {matcher?, hooks: [...]}
-SETTINGS=$(echo "$SETTINGS" | jq --argjson hook "$HOOK_ENTRY" '
+SETTINGS=$(echo "$SETTINGS" | jq \
+    --argjson hook "$HOOK_ENTRY" \
+    --argjson reg "$REG_HOOK" \
+    --argjson unreg "$UNREG_HOOK" '
     # Remove any existing claude-notify entries first
     .hooks = ((.hooks // {}) |
-        if .Notification then
-            .Notification |= map(select(.hooks | all(.command | contains("claude-notify") | not)))
-        else . end |
-        if .Stop then
-            .Stop |= map(select(.hooks | all(.command | contains("claude-notify") | not)))
-        else . end
+        to_entries | map(
+            .value |= map(select(.hooks | all(.command | contains("claude-notify") | not)))
+        ) | from_entries
     ) |
     # Add our hooks
     .hooks.Notification = ((.hooks.Notification // []) + [
@@ -104,11 +117,51 @@ SETTINGS=$(echo "$SETTINGS" | jq --argjson hook "$HOOK_ENTRY" '
     ]) |
     .hooks.Stop = ((.hooks.Stop // []) + [
         { "hooks": [$hook] }
+    ]) |
+    .hooks.SessionStart = ((.hooks.SessionStart // []) + [
+        { "matcher": "startup", "hooks": [$reg] },
+        { "matcher": "resume", "hooks": [$reg] }
+    ]) |
+    .hooks.SessionEnd = ((.hooks.SessionEnd // []) + [
+        { "hooks": [$unreg] }
     ])
 ')
 
 echo "$SETTINGS" | jq '.' > "$CLAUDE_SETTINGS"
 echo "Hooks added to: $CLAUDE_SETTINGS"
+
+# --- Install and start the remote control server ---
+echo ""
+echo "Setting up remote control server..."
+
+NODE_PATH="$(command -v node 2>/dev/null || true)"
+SERVER_SCRIPT="${SCRIPT_DIR}/server/index.mjs"
+PLIST_SRC="${SCRIPT_DIR}/server/com.claude-notify.server.plist"
+PLIST_DST="${HOME}/Library/LaunchAgents/com.claude-notify.server.plist"
+
+if [[ -n "$NODE_PATH" && -f "$SERVER_SCRIPT" ]]; then
+    # Generate plist with correct paths
+    sed -e "s|/Users/admin/.volta/bin/node|${NODE_PATH}|g" \
+        -e "s|/Users/admin/dev2/claude-notify/server/index.mjs|${SERVER_SCRIPT}|g" \
+        "$PLIST_SRC" > "$PLIST_DST"
+
+    # Stop existing service if running
+    launchctl unload "$PLIST_DST" 2>/dev/null || true
+
+    # Start service
+    launchctl load "$PLIST_DST"
+    echo "Server installed as launchd service (auto-starts on login)"
+
+    sleep 1
+    if curl -s -m 2 http://127.0.0.1:9876/health >/dev/null 2>&1; then
+        echo "Server is running on http://127.0.0.1:9876"
+    else
+        echo "Warning: Server may not have started. Check: cat /tmp/claude-notify-server.log"
+    fi
+else
+    echo "Skipping server setup (Node.js not found or server script missing)"
+    echo "Install Node.js and re-run to enable remote control features"
+fi
 
 # --- Send test notification ---
 echo ""

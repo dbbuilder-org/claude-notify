@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Claude Code Remote</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0d1117;
+      color: #e6edf3;
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      padding: 20px;
+    }
+    .card {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 12px;
+      padding: 24px;
+      max-width: 420px;
+      width: 100%;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+    .header .icon { font-size: 24px; }
+    .header h1 { font-size: 18px; font-weight: 600; }
+    .project {
+      display: inline-block;
+      background: #1f6feb33;
+      color: #58a6ff;
+      padding: 2px 10px;
+      border-radius: 12px;
+      font-size: 13px;
+      font-weight: 500;
+      margin-bottom: 12px;
+    }
+    .event-type {
+      font-size: 13px;
+      color: #8b949e;
+      margin-bottom: 8px;
+    }
+    .message {
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 12px;
+      font-family: "SF Mono", Monaco, monospace;
+      font-size: 13px;
+      color: #c9d1d9;
+      margin-bottom: 20px;
+      word-break: break-word;
+      white-space: pre-wrap;
+    }
+    .actions {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+    .btn {
+      flex: 1;
+      padding: 12px 16px;
+      border: none;
+      border-radius: 8px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    .btn:hover { opacity: 0.85; }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-approve { background: #238636; color: #fff; }
+    .btn-deny { background: #da3633; color: #fff; }
+    .custom-section {
+      border-top: 1px solid #30363d;
+      padding-top: 16px;
+    }
+    .custom-section label {
+      font-size: 13px;
+      color: #8b949e;
+      display: block;
+      margin-bottom: 8px;
+    }
+    .input-row {
+      display: flex;
+      gap: 8px;
+    }
+    .input-row input {
+      flex: 1;
+      padding: 10px 12px;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      color: #e6edf3;
+      font-size: 14px;
+      font-family: "SF Mono", Monaco, monospace;
+      outline: none;
+    }
+    .input-row input:focus { border-color: #58a6ff; }
+    .btn-send {
+      padding: 10px 20px;
+      background: #1f6feb;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .btn-send:hover { opacity: 0.85; }
+    .btn-send:disabled { opacity: 0.4; cursor: not-allowed; }
+    .expiry {
+      font-size: 12px;
+      color: #6e7681;
+      margin-top: 16px;
+      text-align: center;
+    }
+    .result {
+      text-align: center;
+      padding: 40px 20px;
+    }
+    .result .icon { font-size: 48px; margin-bottom: 16px; }
+    .result p { font-size: 16px; color: #8b949e; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <!-- Active state -->
+    <div id="active">
+      <div class="header">
+        <span class="icon">{{ICON}}</span>
+        <h1>{{TITLE}}</h1>
+      </div>
+      <span class="project" id="project">{{PROJECT}}</span>
+      <div class="event-type">{{EVENT_TYPE}}</div>
+      <div class="message">{{MESSAGE}}</div>
+      <div class="actions">
+        <button class="btn btn-approve" onclick="send('approve')">Approve</button>
+        <button class="btn btn-deny" onclick="send('deny')">Deny</button>
+      </div>
+      <div class="custom-section">
+        <label>Or send a custom response:</label>
+        <div class="input-row">
+          <input type="text" id="custom-input" placeholder="Type a response..."
+                 onkeydown="if(event.key==='Enter')send('custom')">
+          <button class="btn-send" onclick="send('custom')">Send</button>
+        </div>
+      </div>
+      <div class="expiry" id="expiry"></div>
+    </div>
+
+    <!-- Result state -->
+    <div id="result" class="result hidden">
+      <div class="icon" id="result-icon"></div>
+      <h1 id="result-title"></h1>
+      <p id="result-message"></p>
+    </div>
+  </div>
+
+  <script>
+    const UUID = "{{UUID}}";
+    const CREATED_AT = {{CREATED_AT}};
+    const TTL_MS = 30 * 60 * 1000;
+    let used = false;
+
+    function updateExpiry() {
+      const remaining = Math.max(0, (CREATED_AT + TTL_MS) - Date.now());
+      const minutes = Math.floor(remaining / 60000);
+      const el = document.getElementById("expiry");
+      if (remaining <= 0) {
+        el.textContent = "This link has expired.";
+        disableAll();
+      } else {
+        el.textContent = `One-time use \u2022 Expires in ${minutes}m`;
+      }
+    }
+
+    function disableAll() {
+      document.querySelectorAll("button, input").forEach(el => el.disabled = true);
+    }
+
+    function showResult(icon, title, message) {
+      document.getElementById("active").classList.add("hidden");
+      const result = document.getElementById("result");
+      result.classList.remove("hidden");
+      document.getElementById("result-icon").textContent = icon;
+      document.getElementById("result-title").textContent = title;
+      document.getElementById("result-message").textContent = message;
+    }
+
+    async function send(action) {
+      if (used) return;
+      used = true;
+      disableAll();
+
+      let url, body;
+      if (action === "approve") {
+        url = `/approve/${UUID}`;
+      } else if (action === "deny") {
+        url = `/deny/${UUID}`;
+      } else {
+        url = `/control/${UUID}`;
+        body = document.getElementById("custom-input").value || "y";
+      }
+
+      try {
+        const opts = body !== undefined
+          ? { method: "POST", headers: { "Content-Type": "text/plain" }, body }
+          : { method: "GET" };
+        const res = await fetch(url, opts);
+        const data = await res.json();
+
+        if (data.ok) {
+          showResult("\u2705", "Sent!", `Response delivered to Claude Code.`);
+        } else {
+          showResult("\u274c", "Failed", data.error || "Could not deliver response.");
+          used = false;
+        }
+      } catch (e) {
+        showResult("\u274c", "Error", "Network error. Is the server running?");
+        used = false;
+      }
+    }
+
+    // Hide project badge if empty
+    if (!document.getElementById("project").textContent.trim()) {
+      document.getElementById("project").style.display = "none";
+    }
+
+    updateExpiry();
+    setInterval(updateExpiry, 30000);
+  </script>
+</body>
+</html>
